@@ -11,6 +11,9 @@ from evo.core.trajectory import PosePath3D
 from evo.core.metrics import PoseRelation
 from evo.core.result import Result
 
+import numpy as np
+from scipy.interpolate import interp1d
+
 class RobustnessMetric:
     def calc_fscore(trans_deriv1, rot_deriv1, trans_deriv2, rot_deriv2, trans_threshold, rot_threshold):
         """
@@ -164,14 +167,42 @@ class RobustnessMetric:
         print(f"Results saved to: {result_file}")
 
     def plot_robustness_metrics(auc_result, ref_file, est_file):
+        
+        
         thresholds = auc_result['thresholds']
         fscore_transes = auc_result['fscore_transes']
         fscore_rots = auc_result['fscore_rots']
         
+        
+        thresholds_array = np.array(thresholds)
+        fscore_transes_array = np.array(fscore_transes)
+        fscore_rots_array = np.array(fscore_rots)
+        
+        
+        sorted_indices = np.argsort(thresholds_array)[::-1]
+        thresholds_sorted = thresholds_array[sorted_indices]
+        fscore_transes_sorted = fscore_transes_array[sorted_indices]
+        fscore_rots_sorted = fscore_rots_array[sorted_indices]
+        
+        
+        fine_thresholds = np.linspace(thresholds_sorted.max(), thresholds_sorted.min(), 5000)
+        
+        
+        f_trans_interp = interp1d(thresholds_sorted, fscore_transes_sorted, kind='cubic')
+        f_rot_interp = interp1d(thresholds_sorted, fscore_rots_sorted, kind='cubic')
+        
+        
+        smooth_fscore_trans = f_trans_interp(fine_thresholds)
+        smooth_fscore_rot = f_rot_interp(fine_thresholds)
+        
         plt.figure(figsize=(10, 6))
         
-        plt.plot(thresholds, fscore_transes, label=f'Translation $R_p$ [AUC: {auc_result["fscore_area_trans"]:.3f}]', color='#1f77b4', linestyle='-', linewidth=2)
-        plt.plot(thresholds, fscore_rots, label=f'Rotation $R_r$ [AUC: {auc_result["fscore_area_rot"]:.3f}]', color='#ff7f0e', linestyle='-', linewidth=2)
+        plt.plot(fine_thresholds, smooth_fscore_trans, 
+                label=f'Translation $R_p$ [AUC: {auc_result["fscore_area_trans"]:.3f}]', 
+                color='#1f77b4', linestyle='-', linewidth=2)
+        plt.plot(fine_thresholds, smooth_fscore_rot, 
+                label=f'Rotation $R_r$ [AUC: {auc_result["fscore_area_rot"]:.3f}]', 
+                color='#ff7f0e', linestyle='-', linewidth=2)
         
         plt.xlabel('Threshold', fontsize=14)
         plt.ylabel('F1 score', fontsize=14)
@@ -179,7 +210,7 @@ class RobustnessMetric:
         plt.legend(loc='lower left', fontsize=12)
         plt.grid(True, linestyle='--', alpha=0.7)
         
-        plt.xlim(min(thresholds), max(thresholds))
+        plt.xlim(min(fine_thresholds), max(fine_thresholds))
         plt.ylim(0, 1.01)
         
         plt.gca().spines['top'].set_visible(False)

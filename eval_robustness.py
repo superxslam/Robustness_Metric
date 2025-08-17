@@ -20,7 +20,38 @@ from evo.core.metrics import PoseRelation
 import evo.main_rpe as main_rpe
 import numpy as np
 
+from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation, Slerp
+from evo.core.trajectory import PosePath3D
+import numpy as np
+
+
+
 print(f"Current working directory: {os.getcwd()}")
+
+def resample_ground_truth(traj_ref, target_timestamps):
+   
+    
+    t_ref = np.array(traj_ref.timestamps)              
+    pts   = np.array(traj_ref.positions_xyz)           
+    fx = interp1d(t_ref, pts[:,0], kind='linear', fill_value='extrapolate')
+    fy = interp1d(t_ref, pts[:,1], kind='linear', fill_value='extrapolate')
+    fz = interp1d(t_ref, pts[:,2], kind='linear', fill_value='extrapolate')
+    t_tgt = np.array(target_timestamps)                
+    new_pts = np.vstack((fx(t_tgt), fy(t_tgt), fz(t_tgt))).T  
+
+    
+    quats = np.array(traj_ref.orientations_quat)       
+    rot_seq = Rotation.from_quat(quats)
+    slerp   = Slerp(t_ref, rot_seq)
+    new_rots = slerp(t_tgt)                            
+    new_quats = new_rots.as_quat().tolist()            
+
+    return PosePath3D(
+        positions_xyz=new_pts.tolist(),
+        orientations=new_quats,
+        timestamps=t_tgt.tolist()
+    )
 
 def load_config(config_path):
     if not os.path.exists(config_path):
@@ -53,36 +84,46 @@ def process_trajectory_pair(ref_file, est_file, config):
     threshold_interval = threshold_start * 2
 
     traj_ref = file_interface.read_tum_trajectory_file(ref_file)
-    full_len = len(traj_ref.positions_xyz)
-    print("Ref Size (Complete length): ", full_len)
-
     traj_est = file_interface.read_tum_trajectory_file(est_file)
+
     offset_2 = abs(traj_est.timestamps[0] - traj_ref.timestamps[0])
     offset_2 *= -1 if traj_est.timestamps[0] > traj_ref.timestamps[0] else 1
 
     traj_ref, traj_est = sync.associate_trajectories(traj_ref, traj_est, max_diff, offset_2)
-    print("Est Size: ", len(traj_est.positions_xyz))
+    full_len = len(traj_ref.positions_xyz)
+    print("Matched frames count:", full_len)
+    print("Est Size:", len(traj_est.positions_xyz))
 
-    result_trans = main_rpe.rpe(traj_ref, traj_est, est_name='RPE translation',
-                            pose_relation=PoseRelation.translation_part, 
-                            delta=1.0, delta_unit=Unit.frames,
-                            all_pairs=False, align=True, correct_scale=False,
-                            support_loop=False)
-
-    rpe_rot = metrics.RPE(PoseRelation.rotation_angle_deg, delta=1.0, delta_unit=Unit.frames, all_pairs=False)
-    rpe_rot.process_data((traj_ref, traj_est))
-    
+    result_trans = main_rpe.rpe(
+        traj_ref, traj_est,
+        est_name='RPE translation',
+        pose_relation=PoseRelation.translation_part,
+        delta=1.0, delta_unit=Unit.frames,
+        all_pairs=False, align=True, correct_scale=False,
+        support_loop=False
+    )
     rpe_trans_result = result_trans.np_arrays["error_array"]
+
+    rpe_rot = metrics.RPE(
+        PoseRelation.rotation_angle_deg,
+        delta=1.0, delta_unit=Unit.frames,
+        all_pairs=False
+    )
+    rpe_rot.process_data((traj_ref, traj_est))
     rpe_rot_result = np.radians(rpe_rot.error)
 
     fscore_trans, fscore_rot = RobustnessMetric.calc_fscore(
-        rpe_trans_result, rpe_rot_result, full_len, trans_threshold, rot_threshold
+        rpe_trans_result, rpe_rot_result,
+        full_len, trans_threshold, rot_threshold
     )
 
     auc_result = RobustnessMetric.eval_robustness_batch(
-        rpe_trans_result, rpe_rot_result, full_len, threshold_start, threshold_end, threshold_interval)
+        rpe_trans_result, rpe_rot_result,
+        full_len, threshold_start, threshold_end, threshold_interval
+    )
 
     return fscore_trans, fscore_rot, auc_result
+
 
 def main(config_path, plot_mode):
     print(f"Current working directory: {os.getcwd()}")
